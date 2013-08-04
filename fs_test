@@ -79,6 +79,7 @@ class SessionManager(object):
         self.duration = duration
         self.originate_string = originate_string
         self.logger = logger
+        self.test_id = 'fs_test'
 
         self.sessions = {}
         self.hangup_causes = {}
@@ -101,14 +102,21 @@ class SessionManager(object):
             raise Exception
 
         # Raise the sps and max_sessions limit to make sure they do not obstruct our test
-        self.con.api('fsctl sps %d' % (self.rate * 10))
-        self.con.api('fsctl max_sessions %d' % (self.limit * 10))
+        self.con.api('fsctl sps %d' % 100000)
+        self.con.api('fsctl max_sessions %d' % 100000)
 
         # Reduce logging level to avoid much output in console/logfile
         self.con.api('fsctl loglevel warning')
 
         # Register relevant events to get notified about our sessions created/destroyed
         self.con.events('plain', 'CHANNEL_ORIGINATE CHANNEL_ANSWER CHANNEL_HANGUP')
+
+        # Fix up the originate string to add our identifier
+        if self.originate_string[0] == '{':
+            self.originate_string = '{%s=true,%s' % (self.test_id, self.originate_string[1:])
+        else:
+            self.originate_string = '{%s=true}%s' % (self.test_id, self.originate_string)
+        self.logger.debug('Originate string: %s' % self.originate_string)
 
     def originate_sessions(self):
         self.logger.debug('Originating sessions')
@@ -124,7 +132,8 @@ class SessionManager(object):
             sesscnt = sesscnt + 1
             originated_sessions = originated_sessions + 1
         if originated_sessions:
-            self.logger.info('Originated %d new sessions\n', originated_sessions)
+            self.logger.info('Originated %d new sessions', originated_sessions)
+        self.logger.debug('Done originating sessions')
         self.sched.enter(1, 1, self.originate_sessions, [])
 
     def process_event(self, e):
@@ -182,19 +191,28 @@ class SessionManager(object):
         self.logger.error('Disconnected from server!')
         self.terminate = True
 
+    def hupall(self):
+        self.con.api('bgapi hupall NORMAL_CLEARING %s true' % (self.test_id))
+
     def run(self):
         self.originate_sessions()
-        while True:
-            self.sched.fast_run()
-            sched_sleep = self.sched.next_event_time_delta()
-            if sched_sleep == 0:
-                sched_sleep = 1
-            e = self.con.recvEventTimed((sched_sleep * 1000))
-            if e is None:
-                continue
-            self.process_event(e)
-            if self.terminate:
-                break
+        try:
+            while True:
+                self.sched.fast_run()
+                e = self.con.recvEventTimed(100)
+                if e is None:
+                    continue
+                self.process_event(e)
+                if self.terminate:
+                    break
+        except:
+            if not self.con.connected():
+                self.con = ESL.ESLconnection(self.server, self.port, self.auth)
+                if not self.con.connected():
+                    logger.error('Failed to re-connect!')
+                    raise
+            self.hupall()
+            raise
 
     def report(self):
         self.logger.info('Total originated sessions: %d' % self.total_originated_sessions)
