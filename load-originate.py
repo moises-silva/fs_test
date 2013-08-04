@@ -69,7 +69,7 @@ class Session(object):
 
 class SessionManager(object):
     def __init__(self, server, port, auth, logger,
-            rate=1, limit=1, max_sessions=1, duration=60, originate_string=''):
+            rate=1, limit=1, max_sessions=0, duration=60, originate_string=''):
         self.server = server
         self.port = port
         self.auth = auth
@@ -111,16 +111,20 @@ class SessionManager(object):
         self.con.events('plain', 'CHANNEL_ORIGINATE CHANNEL_ANSWER CHANNEL_HANGUP')
 
     def originate_sessions(self):
-        self.logger.info('Originating sessions')
-        if self.total_originated_sessions >= self.max_sessions:
-            self.logger.info('Done originating')
+        self.logger.debug('Originating sessions')
+        if self.max_sessions and self.total_originated_sessions >= self.max_sessions:
+            self.logger.info('Done originating sessions')
             return
         sesscnt = len(self.sessions)
+        originated_sessions = 0
         for i in range(0, self.rate):
             if sesscnt >= self.limit:
                 break
             self.con.api('bgapi originate %s' % (self.originate_string))
             sesscnt = sesscnt + 1
+            originated_sessions = originated_sessions + 1
+        if originated_sessions:
+            self.logger.info('Originated %d new sessions\n', originated_sessions)
         self.sched.enter(1, 1, self.originate_sessions, [])
 
     def process_event(self, e):
@@ -170,7 +174,7 @@ class SessionManager(object):
             self.total_failed_sessions = self.total_failed_sessions + 1
         del self.sessions[uuid]
         self.logger.debug('Hung up session %s' % uuid)
-        if (self.total_originated_sessions >= self.max_sessions \
+        if (self.max_sessions and self.total_originated_sessions >= self.max_sessions \
             and len(self.sessions) == 0):
             self.terminate = True
 
@@ -192,11 +196,20 @@ class SessionManager(object):
             if self.terminate:
                 break
 
+    def report(self):
+        self.logger.info('Total originated sessions: %d' % self.total_originated_sessions)
+        self.logger.info('Total answered sessions: %d' % self.total_answered_sessions)
+        self.logger.info('Total failed sessions: %d' % self.total_failed_sessions)
+        self.logger.info('-- Call Hangup Stats --')
+        for cause, count in self.hangup_causes.iteritems():
+            self.logger.info('%s: %d' % (cause, count))
+        self.logger.info('-----------------------')
+
 def main(argv):
 
     formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
     logger = logging.getLogger(os.path.basename(sys.argv[0]))
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
@@ -216,15 +229,17 @@ def main(argv):
                     help="Limit max number of concurrent sessions")
     parser.add_option("-d", "--duration", dest="duration", default=60,
                     help="Max duration in seconds of sessions before being hung up")
-    parser.add_option("-m", "--max-sessions", dest="max_sessions", default=1,
+    parser.add_option("-m", "--max-sessions", dest="max_sessions", default=0,
                     help="Max number of sessions to originate before stopping")
     parser.add_option("-o", "--originate-string", dest="originate_string",
                     help="FreeSWITCH originate string")
+    parser.add_option("", "--debug", dest="debug", action="store_true",
+                    help="Enable debugging")
 
     (options, args) = parser.parse_args()
 
     if not options.originate_string:
-        print '-o is mandatory'
+        sys.stderr.write('-o is mandatory\n')
         sys.exit(1)
 
     sm = SessionManager(options.server, options.port, options.auth, logger,
@@ -236,15 +251,12 @@ def main(argv):
     except KeyboardInterrupt:
         pass
 
-    print 'Total originated sessions: %d' % sm.total_originated_sessions
-    print 'Total answered sessions: %d' % sm.total_answered_sessions
-    print 'Total failed sessions: %d' % sm.total_failed_sessions
-    print '-- Call Hangup Stats --'
-    for cause, count in sm.hangup_causes.iteritems():
-        print '%s: %d' % (cause, count)
-    print '-----------------------'
+    sm.report()
 
-    sys.exit(0)
+    if sm.total_failed_sessions:
+        sys.exit(1)
+    else:
+        sys.exit(0)
 
 if __name__ == '__main__':
     try:
@@ -252,5 +264,5 @@ if __name__ == '__main__':
     except SystemExit:
         raise
     except Exception, e:
-        print "Exception caught: %s" % (e)
+        sys.stderr.write("Exception caught: %s\n" % (e))
 
