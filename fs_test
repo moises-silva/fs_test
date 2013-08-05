@@ -108,6 +108,9 @@ class SessionManager(object):
         # Reduce logging level to avoid much output in console/logfile
         self.con.api('fsctl loglevel warning')
 
+        # Make sure latest XML is loaded
+        self.con.api('reloadxml')
+
         # Register relevant events to get notified about our sessions created/destroyed
         self.con.events('plain', 'CHANNEL_ORIGINATE CHANNEL_ANSWER CHANNEL_HANGUP')
 
