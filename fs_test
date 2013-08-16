@@ -23,9 +23,9 @@ class FastScheduler(sched.scheduler):
         self.queue = []
         # Do not use super() as sched.scheduler does not inherit from object
         sched.scheduler.__init__(self, timefunc, delayfunc)
-        if sys.version_info[0] == 2 and sys.version_info[1] == 7:
+        if sys.version_info[0] == 2 and sys.version_info[1] >= 6:
             """
-            Python 2.7 renamed the sched member queue to _queue, lets
+            Python 2.6 renamed the sched member queue to _queue, lets
             keep the old name in our class
             """
             self.queue = self._queue
@@ -109,6 +109,7 @@ class SessionManager(object):
         if debug:
             self.con.api('fsctl loglevel debug')
             self.con.api('console loglevel debug')
+            logger.setLevel(logging.DEBUG)
         else:
             self.con.api('fsctl loglevel warning')
             self.con.api('console loglevel warning')
