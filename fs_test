@@ -69,7 +69,7 @@ class Session(object):
 
 class SessionManager(object):
     def __init__(self, server, port, auth, logger,
-            rate=1, limit=1, max_sessions=0, duration=60, originate_string=''):
+            rate=1, limit=1, max_sessions=0, duration=60, originate_string='', debug=False):
         self.server = server
         self.port = port
         self.auth = auth
@@ -106,7 +106,12 @@ class SessionManager(object):
         self.con.api('fsctl max_sessions %d' % 100000)
 
         # Reduce logging level to avoid much output in console/logfile
-        self.con.api('fsctl loglevel warning')
+        if debug:
+            self.con.api('fsctl loglevel debug')
+            self.con.api('console loglevel debug')
+        else:
+            self.con.api('fsctl loglevel warning')
+            self.con.api('console loglevel warning')
 
         # Make sure latest XML is loaded
         self.con.api('reloadxml')
@@ -265,7 +270,7 @@ def main(argv):
 
     sm = SessionManager(options.server, options.port, options.auth, logger,
             rate=int(options.rate), limit=int(options.limit), duration=int(options.duration),
-            max_sessions=int(options.max_sessions), originate_string=options.originate_string)
+            max_sessions=int(options.max_sessions), originate_string=options.originate_string, debug=options.debug)
 
     try:
         sm.run()
