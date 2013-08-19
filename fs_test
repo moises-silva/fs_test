@@ -6,6 +6,7 @@ import time
 import sched
 import ESL
 import logging
+import uuid
 from optparse import OptionParser
 
 """
@@ -65,21 +66,26 @@ class FastScheduler(sched.scheduler):
 class Session(object):
     def __init__(self, uuid):
         self.uuid = uuid
+        self.created = False
         self.answered = False
 
 class SessionManager(object):
     def __init__(self, server, port, auth, logger,
-            rate=1, limit=1, max_sessions=0, duration=60, originate_string='', debug=False):
+            rate=1, limit=1, max_sessions=0, duration=60, originate_string='',
+            debug=False, dtmf_seq=None, dtmf_delay=1):
         self.server = server
         self.port = port
         self.auth = auth
         self.rate = rate
         self.limit = limit
         self.max_sessions = max_sessions
+        self.dtmf_seq = dtmf_seq
+        self.dtmf_delay = dtmf_delay
         self.duration = duration
         self.originate_string = originate_string
         self.logger = logger
-        self.test_id = 'fs_test'
+        self.test_id_var = 'fs_test'
+        self.test_id = uuid.uuid1()
 
         self.sessions = {}
         self.hangup_causes = {}
@@ -122,9 +128,9 @@ class SessionManager(object):
 
         # Fix up the originate string to add our identifier
         if self.originate_string[0] == '{':
-            self.originate_string = '{%s=true,%s' % (self.test_id, self.originate_string[1:])
+            self.originate_string = '{%s=%s,%s' % (self.test_id_var, str(self.test_id), self.originate_string[1:])
         else:
-            self.originate_string = '{%s=true}%s' % (self.test_id, self.originate_string)
+            self.originate_string = '{%s=true}%s' % (self.test_id_var, str(self.test_id), self.originate_string)
         self.logger.debug('Originate string: %s' % self.originate_string)
 
     def originate_sessions(self):
@@ -137,9 +143,13 @@ class SessionManager(object):
         for i in range(0, self.rate):
             if sesscnt >= self.limit:
                 break
-            self.con.api('bgapi originate %s' % (self.originate_string))
+            originate_uuid = uuid.uuid1()
+            originate_string = '{origination_uuid=%s,%s' % (originate_uuid, self.originate_string[1:])
+            self.sessions[str(originate_uuid)] = Session(originate_uuid)
+            self.con.api('bgapi originate %s' % (originate_string))
             sesscnt = sesscnt + 1
             originated_sessions = originated_sessions + 1
+            self.logger.debug('Requested session %s (%s)' % (originate_uuid, originate_string))
         if originated_sessions:
             self.logger.info('Originated %d new sessions', originated_sessions)
         self.logger.debug('Done originating sessions')
@@ -159,17 +169,15 @@ class SessionManager(object):
 
     def handle_originate(self, e):
         uuid = e.getHeader('Channel-Call-UUID')
-        dir = e.getHeader('Call-Direction')
-        if dir != 'outbound':
-            # Ignore non-outbound calls (allows looping calls back on the DUT)
+        if uuid not in self.sessions:
+            # Ignore call we did not originate
             return
         self.logger.debug('Originated session %s' % uuid)
-        if uuid in self.sessions:
-            self.logger.error('WTF? duplicated originate session %s' % (uuid))
-            return
-        self.sessions[uuid] = Session(uuid)
+        self.sessions[uuid].created = True
         self.total_originated_sessions = self.total_originated_sessions + 1
         self.con.api('sched_hangup +%d %s NORMAL_CLEARING' % (self.duration, uuid))
+        if self.dtmf_seq:
+            self.con.api('sched_api +%d none uuid_send_dtmf %s %s' % (self.dtmf_delay, uuid, self.dtmf_seq))
 
     def handle_answer(self, e):
         uuid = e.getHeader('Channel-Call-UUID')
@@ -201,7 +209,7 @@ class SessionManager(object):
         self.terminate = True
 
     def hupall(self):
-        self.con.api('bgapi hupall NORMAL_CLEARING %s true' % (self.test_id))
+        self.con.api('bgapi hupall NORMAL_CLEARING %s %s' % (self.test_id_var, str(self.test_id)))
 
     def run(self):
         self.originate_sessions()
@@ -262,6 +270,10 @@ def main(argv):
                     help="FreeSWITCH originate string")
     parser.add_option("", "--debug", dest="debug", action="store_true",
                     help="Enable debugging")
+    parser.add_option("", "--dtmf-seq", dest="dtmf_seq", default=None,
+                    help="Play the given DTMF sequence after answer")
+    parser.add_option("", "--dtmf-delay", dest="dtmf_delay", default=1,
+                    help="How long to wait after answer to play DTMF")
 
     (options, args) = parser.parse_args()
 
@@ -271,7 +283,8 @@ def main(argv):
 
     sm = SessionManager(options.server, options.port, options.auth, logger,
             rate=int(options.rate), limit=int(options.limit), duration=int(options.duration),
-            max_sessions=int(options.max_sessions), originate_string=options.originate_string, debug=options.debug)
+            max_sessions=int(options.max_sessions), originate_string=options.originate_string,
+            debug=options.debug, dtmf_seq=options.dtmf_seq, dtmf_delay=options.dtmf_delay)
 
     try:
         sm.run()
