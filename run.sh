@@ -31,6 +31,7 @@ limit=1
 rate=1
 max=1
 debug=
+dtmf_seq=
 verify=
 
 while [ $1 ]
@@ -87,13 +88,15 @@ do
 		max=$1
 	elif [ $1 = "-debug" ];then
 		debug="--debug"
+	elif [ $1 = "-dtmf" ];then
+		dtmf_seq="--dtmf-seq 123456789 --dtmf-delay 5"
 	elif [ $1 = "-t" ];then
 		verify="true"
 	fi
 	shift
 done
 
-cmd="./fs_test -d $duration -l $limit -r $rate -m $max $debug -o \"{absolute_codec_string=PCMU,origination_caller_id_name='Sangoma Technologies',origination_caller_id_number=$from_did}sofia/internal/$to_did@$to_ip $orig_did XML default\""
+cmd="./fs_test -d $duration -l $limit -r $rate -m $max $debug $dtmf_seq -o \"{absolute_codec_string=PCMU,origination_caller_id_name='Sangoma Technologies',origination_caller_id_number=$from_did}sofia/internal/$to_did@$to_ip $orig_did XML default\""
 echo $cmd
 
 if [ "$verify" = "true" ]; then

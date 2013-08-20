@@ -177,6 +177,7 @@ class SessionManager(object):
         self.total_originated_sessions = self.total_originated_sessions + 1
         self.con.api('sched_hangup +%d %s NORMAL_CLEARING' % (self.duration, uuid))
         if self.dtmf_seq:
+            self.logger.debug('Scheduling DTMF %s with delay %d at uuid %s' % (self.dtmf_seq, self.dtmf_delay, uuid))
             self.con.api('sched_api +%d none uuid_send_dtmf %s %s' % (self.dtmf_delay, uuid, self.dtmf_seq))
 
     def handle_answer(self, e):
@@ -284,7 +285,7 @@ def main(argv):
     sm = SessionManager(options.server, options.port, options.auth, logger,
             rate=int(options.rate), limit=int(options.limit), duration=int(options.duration),
             max_sessions=int(options.max_sessions), originate_string=options.originate_string,
-            debug=options.debug, dtmf_seq=options.dtmf_seq, dtmf_delay=options.dtmf_delay)
+            debug=options.debug, dtmf_seq=options.dtmf_seq, dtmf_delay=int(options.dtmf_delay))
 
     try:
         sm.run()
