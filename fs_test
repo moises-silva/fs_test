@@ -2,6 +2,7 @@
 # vim: tabstop=4 softtabstop=4 shiftwidth=4 textwidth=80 smarttab expandtab
 import sys
 import os
+import signal
 import time
 import sched
 import ESL
@@ -66,6 +67,7 @@ class FastScheduler(sched.scheduler):
 class Session(object):
     def __init__(self, uuid):
         self.uuid = uuid
+        self.partner_uuid = None
         self.created = False
         self.answered = False
         self.bert_sync_lost_cnt = 0
@@ -88,15 +90,20 @@ class SessionManager(object):
         self.logger = logger
         self.test_id_var = 'fs_test'
         self.test_id = uuid.uuid1()
+        self.test_uuid_x_header = 'sip_h_X-fs_test_uuid'
+        self.bert_sync_lost_var = 'bert_stats_sync_lost'
 
         self.sessions = {}
+        self.peer_sessions = {}
         self.hangup_causes = {}
         self.total_originated_sessions = 0
         self.total_answered_sessions = 0
         self.total_failed_sessions = 0
         self.terminate = False
+        self.paused = 0
         self.ev_handlers = {
             'CHANNEL_ORIGINATE': self.handle_originate,
+            'CHANNEL_CREATE': self.handle_create,
             'CHANNEL_ANSWER': self.handle_answer,
             'CHANNEL_BRIDGE': self.handle_answer,
             'CHANNEL_HANGUP': self.handle_hangup,
@@ -108,6 +115,8 @@ class SessionManager(object):
             'mod_bert::lost_sync': self.handle_bert_lost_sync,
         }
 
+        signal.signal(signal.SIGTSTP, self.pause_resume_calls)
+
         self.sched = FastScheduler(time.time, time.sleep)
         # Initialize the ESL connection
         self.con = ESL.ESLconnection(self.server, self.port, self.auth)
@@ -118,6 +127,7 @@ class SessionManager(object):
         # Raise the sps and max_sessions limit to make sure they do not obstruct our test
         self.con.api('fsctl sps %d' % 100000)
         self.con.api('fsctl max_sessions %d' % 100000)
+        self.con.api('fsctl verbose_events true')
 
         # Reduce logging level to avoid much output in console/logfile
         if debug:
@@ -146,7 +156,21 @@ class SessionManager(object):
             self.originate_string = '{%s=true}%s' % (self.test_id_var, str(self.test_id), self.originate_string)
         self.logger.debug('Originate string: %s' % self.originate_string)
 
+    def pause_resume_calls(self, signum, frame):
+        if self.paused:
+            self.paused = 0
+        else:
+            self.paused = 1
+
     def originate_sessions(self):
+        if self.paused:
+            if self.paused == 1:
+                self.logger.info('... Paused ...')
+            self.paused = self.paused + 1
+            self.sched.enter(1, 1, self.originate_sessions, [])
+            return
+        if not self.con.connected():
+            self.reconnect()
         self.logger.debug('Originating sessions')
         if self.max_sessions and self.total_originated_sessions >= self.max_sessions:
             self.logger.info('Done originating sessions')
@@ -157,7 +181,8 @@ class SessionManager(object):
             if sesscnt >= self.limit:
                 break
             originate_uuid = uuid.uuid1()
-            originate_string = '{origination_uuid=%s,%s' % (originate_uuid, self.originate_string[1:])
+            originate_string = '{origination_uuid=%s,%s=%s,%s' % (str(originate_uuid),
+                                self.test_uuid_x_header, str(originate_uuid), self.originate_string[1:])
             self.sessions[str(originate_uuid)] = Session(originate_uuid)
             self.con.api('bgapi originate %s' % (originate_string))
             sesscnt = sesscnt + 1
@@ -188,6 +213,22 @@ class SessionManager(object):
                 self.logger.error('Failed to process event %s/%s: %s' % (evname, subclass, ex))
         else:
             self.logger.error('Unknown event %s/%s' % (evname, subclass))
+
+    def handle_create(self, e):
+        uuid = e.getHeader('Unique-ID')
+        self.logger.debug('Created session %s' % uuid)
+        if uuid in self.sessions:
+            return
+        var_uuid = 'variable_%s' % (self.test_uuid_x_header)
+        partner_uuid = e.getHeader(var_uuid)
+        if not partner_uuid:
+            return
+        if partner_uuid not in self.sessions:
+            return
+        self.logger.debug('UUID %s is bridged to UUID %s' % (uuid, partner_uuid))
+        self.sessions[partner_uuid].partner_uuid = uuid
+        self.peer_sessions[uuid] = self.sessions[partner_uuid]
+        self.con.api('uuid_set_var %s %s %s' % (uuid, self.test_id_var, self.test_id))
 
     def handle_originate(self, e):
         uuid = e.getHeader('Unique-ID')
@@ -230,9 +271,20 @@ class SessionManager(object):
     def handle_bert_lost_sync(self, e):
         uuid = e.getHeader('Unique-ID')
         if uuid not in self.sessions:
-            return
+            if uuid not in self.peer_sessions:
+                return
+            sess = self.peer_sessions[uuid]
+            partner_uuid = sess.uuid
+        else:
+            sess = self.sessions[uuid]
+            partner_uuid = sess.partner_uuid
         self.logger.error('BERT Lost Sync on session %s' % uuid)
-        self.sessions[uuid].bert_sync_lost_cnt = self.sessions[uuid].bert_sync_lost_cnt + 1
+        sess.bert_sync_lost_cnt = sess.bert_sync_lost_cnt + 1
+        if sess.bert_sync_lost_cnt > 1:
+            return
+        # Since mod_bert does not know about the peer session, we set the var ourselves
+        self.con.api('uuid_set_var %s %s true' % (uuid, self.bert_sync_lost_var))
+        self.con.api('uuid_set_var %s %s true' % (partner_uuid, self.bert_sync_lost_var))
 
     def handle_bert_timeout(self, e):
         uuid = e.getHeader('Unique-ID')
@@ -260,13 +312,17 @@ class SessionManager(object):
                 if self.terminate:
                     break
         except:
-            if not self.con.connected():
-                self.con = ESL.ESLconnection(self.server, self.port, self.auth)
-                if not self.con.connected():
-                    logger.error('Failed to re-connect!')
-                    raise
+            self.reconnect()
             self.hupall()
             raise
+
+    def reconnect(self):
+        if self.con.connected():
+            return
+        self.con = ESL.ESLconnection(self.server, self.port, self.auth)
+        if not self.con.connected():
+            logger.error('Failed to re-connect!')
+            self.terminate = True
 
     def report(self):
         self.logger.info('Total originated sessions: %d' % self.total_originated_sessions)
@@ -342,4 +398,5 @@ if __name__ == '__main__':
         raise
     except Exception, e:
         sys.stderr.write("Exception caught: %s\n" % (e))
+        raise
 
