@@ -68,6 +68,8 @@ class Session(object):
         self.uuid = uuid
         self.created = False
         self.answered = False
+        self.bert_sync_lost_cnt = 0
+        self.bert_timeout = False
 
 class SessionManager(object):
     def __init__(self, server, port, auth, logger,
@@ -96,8 +98,14 @@ class SessionManager(object):
         self.ev_handlers = {
             'CHANNEL_ORIGINATE': self.handle_originate,
             'CHANNEL_ANSWER': self.handle_answer,
+            'CHANNEL_BRIDGE': self.handle_answer,
             'CHANNEL_HANGUP': self.handle_hangup,
             'SERVER_DISCONNECTED': self.handle_disconnect,
+            'CUSTOM': self.handle_custom,
+        }
+        self.custom_ev_handlers = {
+            'mod_bert::timeout': self.handle_bert_timeout,
+            'mod_bert::lost_sync': self.handle_bert_lost_sync,
         }
 
         self.sched = FastScheduler(time.time, time.sleep)
@@ -124,7 +132,12 @@ class SessionManager(object):
         self.con.api('reloadxml')
 
         # Register relevant events to get notified about our sessions created/destroyed
-        self.con.events('plain', 'CHANNEL_ORIGINATE CHANNEL_ANSWER CHANNEL_HANGUP')
+        #self.con.events('plain', 'CHANNEL_ORIGINATE CHANNEL_ANSWER CHANNEL_HANGUP CUSTOM')
+        for key, val in self.ev_handlers.iteritems():
+            self.con.events('plain', key)
+        for key, val in self.custom_ev_handlers.iteritems():
+            evstr = 'CUSTOM %s' % (key)
+            self.con.events('plain', evstr)
 
         # Fix up the originate string to add our identifier
         if self.originate_string[0] == '{':
@@ -160,15 +173,24 @@ class SessionManager(object):
         if evname in self.ev_handlers:
             try:
                 self.ev_handlers[evname](e)
-                # When a new session is created that belongs to us, we can 
-                # call sched_hangup to hangup the session at x interval
             except Exception, ex:
-                self.logger.error('Failed to process event %s: %s' % (e, ex))
+                self.logger.error('Failed to process event %s: %s' % (evname, ex))
         else:
-            self.logger.error('Unknown event %s' % (e))
+            self.logger.error('Unknown event %s' % (evname))
+
+    def handle_custom(self, e):
+        evname = e.getHeader('Event-Name')
+        subclass = e.getHeader('Event-Subclass')
+        if subclass in self.custom_ev_handlers:
+            try:
+                self.custom_ev_handlers[subclass](e)
+            except Exception, ex:
+                self.logger.error('Failed to process event %s/%s: %s' % (evname, subclass, ex))
+        else:
+            self.logger.error('Unknown event %s/%s' % (evname, subclass))
 
     def handle_originate(self, e):
-        uuid = e.getHeader('Channel-Call-UUID')
+        uuid = e.getHeader('Unique-ID')
         if uuid not in self.sessions:
             # Ignore call we did not originate
             return
@@ -181,7 +203,7 @@ class SessionManager(object):
             self.con.api('sched_api +%d none uuid_send_dtmf %s %s' % (self.dtmf_delay, uuid, self.dtmf_seq))
 
     def handle_answer(self, e):
-        uuid = e.getHeader('Channel-Call-UUID')
+        uuid = e.getHeader('Unique-ID')
         if uuid not in self.sessions:
             return
         self.logger.debug('Answered session %s' % uuid)
@@ -189,7 +211,7 @@ class SessionManager(object):
         self.sessions[uuid].answered = True
 
     def handle_hangup(self, e):
-        uuid = e.getHeader('Channel-Call-UUID')
+        uuid = e.getHeader('Unique-ID')
         if uuid not in self.sessions:
             return
         cause = e.getHeader('Hangup-Cause')
@@ -204,6 +226,20 @@ class SessionManager(object):
         if (self.max_sessions and self.total_originated_sessions >= self.max_sessions \
             and len(self.sessions) == 0):
             self.terminate = True
+
+    def handle_bert_lost_sync(self, e):
+        uuid = e.getHeader('Unique-ID')
+        if uuid not in self.sessions:
+            return
+        self.logger.error('BERT Lost Sync on session %s' % uuid)
+        self.sessions[uuid].bert_sync_lost_cnt = self.sessions[uuid].bert_sync_lost_cnt + 1
+
+    def handle_bert_timeout(self, e):
+        uuid = e.getHeader('Unique-ID')
+        if uuid not in self.sessions:
+            return
+        self.logger.error('BERT Timeout on session %s' % uuid)
+        self.sessions[uuid].bert_timeout = True
 
     def handle_disconnect(self):
         self.logger.error('Disconnected from server!')
