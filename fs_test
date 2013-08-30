@@ -76,7 +76,7 @@ class Session(object):
 class SessionManager(object):
     def __init__(self, server, port, auth, logger,
             rate=1, limit=1, max_sessions=0, duration=60, originate_string='',
-            debug=False, dtmf_seq=None, dtmf_delay=1):
+            debug=False, dtmf_seq=None, dtmf_delay=1, time_rate=1):
         self.server = server
         self.port = port
         self.auth = auth
@@ -86,6 +86,7 @@ class SessionManager(object):
         self.dtmf_seq = dtmf_seq
         self.dtmf_delay = dtmf_delay
         self.duration = duration
+        self.time_rate = time_rate
         self.originate_string = originate_string
         self.logger = logger
         self.test_id_var = 'fs_test'
@@ -191,7 +192,7 @@ class SessionManager(object):
         if originated_sessions:
             self.logger.info('Originated %d new sessions', originated_sessions)
         self.logger.debug('Done originating sessions')
-        self.sched.enter(1, 1, self.originate_sessions, [])
+        self.sched.enter(self.time_rate, 1, self.originate_sessions, [])
 
     def process_event(self, e):
         evname = e.getHeader('Event-Name')
@@ -352,7 +353,9 @@ def main(argv):
     parser.add_option("-p", "--port", dest="port", default="8021",
                     help="FreeSWITCH server event socket port")
     parser.add_option("-r", "--rate", dest="rate", default=1,
-                    help="Rate in sessions to run per second")
+                    help="Rate in sessions to run per unit of time (see --time-rate)")
+    parser.add_option("-t", "--time-rate", dest="time_rate", default=1,
+                    help="Time rate in seconds")
     parser.add_option("-l", "--limit", dest="limit", default=1,
                     help="Limit max number of concurrent sessions")
     parser.add_option("-d", "--duration", dest="duration", default=60,
@@ -377,7 +380,8 @@ def main(argv):
     sm = SessionManager(options.server, options.port, options.auth, logger,
             rate=int(options.rate), limit=int(options.limit), duration=int(options.duration),
             max_sessions=int(options.max_sessions), originate_string=options.originate_string,
-            debug=options.debug, dtmf_seq=options.dtmf_seq, dtmf_delay=int(options.dtmf_delay))
+            debug=options.debug, dtmf_seq=options.dtmf_seq, dtmf_delay=int(options.dtmf_delay),
+            time_rate=int(options.time_rate))
 
     try:
         sm.run()
