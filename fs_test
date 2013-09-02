@@ -154,7 +154,7 @@ class SessionManager(object):
         if self.originate_string[0] == '{':
             self.originate_string = '{%s=%s,%s' % (self.test_id_var, str(self.test_id), self.originate_string[1:])
         else:
-            self.originate_string = '{%s=true}%s' % (self.test_id_var, str(self.test_id), self.originate_string)
+            self.originate_string = '{%s=%s}%s' % (self.test_id_var, str(self.test_id), self.originate_string)
         self.logger.debug('Originate string: %s' % self.originate_string)
 
     def pause_resume_calls(self, signum, frame):
