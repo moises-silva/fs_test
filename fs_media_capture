@@ -1,0 +1,98 @@
+#!/usr/bin/env python
+# vim: tabstop=4 softtabstop=4 shiftwidth=4 textwidth=80 smarttab expandtab
+import sys
+import os
+import ESL
+import logging
+import subprocess
+from optparse import OptionParser
+
+def extract_info(data, peer_needed=False):
+    info = {}
+    info_keys = ['remote_media_ip', 'remote_media_port', 'local_media_ip', 'local_media_port', 'bridge_to']
+    for line in data.split('\n'):
+        for key in info_keys:
+            if line.startswith(key):
+                i = line.index(':')
+                info[key] = line[i+1:]
+
+    for key in info_keys:
+        if not peer_needed and key == 'bridge_to':
+            continue
+        if key not in info_keys:
+            raise Exception('Missing channel variable %s' % key)
+
+    return info
+
+def main(argv):
+
+    formatter = logging.Formatter('[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s')
+    logger = logging.getLogger(os.path.basename(sys.argv[0]))
+    logger.setLevel(logging.INFO)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    parser = OptionParser()
+    parser.add_option("-a", "--auth", dest="auth", default="ClueCon",
+                    help="ESL password")
+    parser.add_option("-s", "--server", dest="server", default="127.0.0.1",
+                    help="FreeSWITCH server IP address")
+    parser.add_option("-p", "--port", dest="port", default="8021",
+                    help="FreeSWITCH server event socket port")
+    parser.add_option("-u", "--channel-uuid", dest="channel_uuid",
+                    help="FreeSWITCH channel uuid to capture")
+    parser.add_option("", "--peer-capture", dest="peer_capture", action="store_true",
+                    help="Enable capturing the peer channel as well (if bridged)")
+
+    (options, args) = parser.parse_args()
+
+    if not options.channel_uuid:
+        parser.error('-u is mandatory')
+        sys.exit(1)
+
+    try:
+        cmd1 = None
+        cmd2 = None
+
+        con = ESL.ESLconnection(options.server, options.port, options.auth)
+        if not con.connected():
+            logger.error('Failed to connect!')
+            raise Exception
+
+        info_cmd = 'uuid_getvars %s remote_media_ip remote_media_port local_media_ip local_media_port bridge_to' % (options.channel_uuid)
+        vars = con.api(info_cmd)
+        if vars.getBody().startswith('-ERR'):
+            raise Exception('No such channel %s' % (options.channel_uuid))
+
+        chan_info = extract_info(vars.getBody(), options.peer_capture)
+        cmd1 = """tcpdump -s 0 -i any -w %s.pcap '(host %s or host %s) and (port %s or port %s)' </dev/null &>/dev/null &""" % (options.channel_uuid,
+                chan_info['remote_media_ip'], chan_info['local_media_ip'], chan_info['remote_media_port'], chan_info['local_media_port'])
+
+        if options.peer_capture:
+            info_cmd = 'uuid_getvars %s remote_media_ip remote_media_port local_media_ip local_media_port bridge_to' % (chan_info['bridge_to'])
+            vars = con.api(info_cmd)
+            if vars.getBody().startswith('-ERR'):
+                raise Exception('No such peer channel %s' % (chan_info['bridge_to']))
+            peer_info = extract_info(vars.getBody())
+            cmd2 = """tcpdump -s 0 -i any -w %s.pcap '(host %s or host %s) and (port %s or port %s)' </dev/null &>/dev/null &""" % (chan_info['bridge_to'],
+                    peer_info['remote_media_ip'], peer_info['local_media_ip'], peer_info['remote_media_port'], peer_info['local_media_port'])
+
+        print cmd1
+        if options.peer_capture:
+            print cmd2
+
+    except Exception, e:
+        print str(e)
+
+
+if __name__ == '__main__':
+    try:
+        main(sys.argv[1:])
+    except SystemExit:
+        raise
+    except Exception, e:
+        sys.stderr.write("Exception caught: %s\n" % (e))
+        raise
+
