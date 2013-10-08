@@ -2,6 +2,7 @@
 # vim: tabstop=4 softtabstop=4 shiftwidth=4 textwidth=80 smarttab expandtab
 import sys
 import os
+import random
 import signal
 import time
 import sched
@@ -13,7 +14,6 @@ from optparse import OptionParser
 """
 TODO
 - Implement -timeout (global timeout, we need to hupall all of our calls and exit)
-- Implement -sleep to sleep x seconds at startup
 - Implement fancy rate logic from sipp
 - Implement sipp -trace-err option
 - Implement sipp return codes (0 for success, 1 call failed, etc etc)
@@ -75,8 +75,9 @@ class Session(object):
 
 class SessionManager(object):
     def __init__(self, server, port, auth, logger,
-            rate=1, limit=1, max_sessions=0, duration=60, originate_string='',
-            debug=False, dtmf_seq=None, dtmf_delay=1, time_rate=1):
+            rate=1, limit=1, max_sessions=0, duration=60, random=0,
+            originate_string='', debug=False, dtmf_seq=None, dtmf_delay=1,
+            time_rate=1,report_interval=0):
         self.server = server
         self.port = port
         self.auth = auth
@@ -86,7 +87,9 @@ class SessionManager(object):
         self.dtmf_seq = dtmf_seq
         self.dtmf_delay = dtmf_delay
         self.duration = duration
+        self.random = random
         self.time_rate = time_rate
+        self.report_interval = report_interval
         self.originate_string = originate_string
         self.logger = logger
         self.test_id_var = 'fs_test'
@@ -239,10 +242,18 @@ class SessionManager(object):
         self.logger.debug('Originated session %s' % uuid)
         self.sessions[uuid].created = True
         self.total_originated_sessions = self.total_originated_sessions + 1
-        self.con.api('sched_hangup +%d %s NORMAL_CLEARING' % (self.duration, uuid))
+        if self.random:
+            duration = random.randint(self.random, self.duration)
+        else:
+            duration = self.duration
+        self.logger.debug('Calculated duration %d for uuid %s' %
+            (duration,uuid))
+        self.con.api('sched_hangup +%d %s NORMAL_CLEARING' % (duration, uuid))
         if self.dtmf_seq:
             self.logger.debug('Scheduling DTMF %s with delay %d at uuid %s' % (self.dtmf_seq, self.dtmf_delay, uuid))
             self.con.api('sched_api +%d none uuid_send_dtmf %s %s' % (self.dtmf_delay, uuid, self.dtmf_seq))
+        if self.report_interval and not self.total_originated_sessions % self.report_interval:
+            self.report()
 
     def handle_answer(self, e):
         uuid = e.getHeader('Unique-ID')
@@ -360,6 +371,8 @@ def main(argv):
                     help="Limit max number of concurrent sessions")
     parser.add_option("-d", "--duration", dest="duration", default=60,
                     help="Max duration in seconds of sessions before being hung up")
+    parser.add_option("", "--random", dest="random", default=0,
+                    help="Randomize duration with minimum number of seconds")
     parser.add_option("-m", "--max-sessions", dest="max_sessions", default=0,
                     help="Max number of sessions to originate before stopping")
     parser.add_option("-o", "--originate-string", dest="originate_string",
@@ -370,6 +383,10 @@ def main(argv):
                     help="Play the given DTMF sequence after answer")
     parser.add_option("", "--dtmf-delay", dest="dtmf_delay", default=1,
                     help="How long to wait after answer to play DTMF")
+    parser.add_option("", "--sleep", dest="sleeptime", default=0,
+                    help="Number of seconds to sleep before starting")
+    parser.add_option("", "--report", dest="report_interval", default=0,
+                    help="Number of originates between cumalative reports")
 
     (options, args) = parser.parse_args()
 
@@ -377,11 +394,23 @@ def main(argv):
         sys.stderr.write('-o is mandatory\n')
         sys.exit(1)
 
+    if options.random > options.duration:
+        sys.stderr.write('random minimum cannot be more than duration\n')
+        sys.exit(1)
+
+    if options.sleeptime:
+        sys.stderr.write('Sleeping for %s seconds...\n' % options.sleeptime)
+        time.sleep(float(options.sleeptime))
+
     sm = SessionManager(options.server, options.port, options.auth, logger,
-            rate=int(options.rate), limit=int(options.limit), duration=int(options.duration),
-            max_sessions=int(options.max_sessions), originate_string=options.originate_string,
-            debug=options.debug, dtmf_seq=options.dtmf_seq, dtmf_delay=int(options.dtmf_delay),
-            time_rate=int(options.time_rate))
+            rate=int(options.rate), limit=int(options.limit),
+            duration=int(options.duration), random=int(options.random),
+            max_sessions=int(options.max_sessions),
+            originate_string=options.originate_string,
+            debug=options.debug, dtmf_seq=options.dtmf_seq,
+            dtmf_delay=int(options.dtmf_delay),
+            time_rate=int(options.time_rate),
+            report_interval=int(options.report_interval))
 
     try:
         sm.run()
