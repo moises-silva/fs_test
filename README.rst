@@ -1,6 +1,6 @@
-**Note that this project has evolved into a more complete project at Sangoma with multiple slaves and custom apps. You should check it out**
-`https://github.com/sangoma/switchy
-<https://github.com/sangoma/switchy>`_.
+**Note that this project has evolved into a more complete project with multiple slaves and custom apps. You should check it out**
+`https://github.com/friends-of-freeswitch/switchio
+<https://github.com/friends-of-freeswitch/switchio>`_.
 
 FreeSWITCH ESL Call Load Tester
 --------------------------------
